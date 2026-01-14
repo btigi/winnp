@@ -1,6 +1,6 @@
 ## Introduction
 
-winnp is a plugin for Winamp (tested with 5.9.2) which logs each song played. Each song is appended to nowplaying.txt in the current user's Documents directory.
+winnp is a plugin for Winamp (tested with 5.9.2) which logs each song played. Each song is appended to nowplaying.db in the current user's Documents directory.
 
 ## Compiling
 
@@ -19,9 +19,11 @@ $ msbuild winnp.sln /p:Configuration=Release
 
 ## Usage
 
-Place the plugin file (gen_winnp.dll) in the Winamp plugin directory (default C:\Program Files (x86)\Winamp\Plugins). Each played song is automatically logged to nowplaying.txt in the current user's Documents directory.
+Place the plugin file (gen_winnp.dll) in the Winamp plugin directory (default C:\Program Files (x86)\Winamp\Plugins). Each played song is automatically logged to nowplaying.db in the current user's Documents directory.
 
 
 ## Licencing
 
 winnp is licenced under the MIT license. Full license details are available in license.md
+
+winnp includes sqlite3.c and sqlite.h, public domain code from [SQLite](https://www.sqlite.org/)

@@ -1,19 +1,19 @@
 #include "winnp.h"
+#include "sqlite3.h"
 #include <windows.h>
 #include <shlobj.h>
-#include <fstream>
 #include <string>
-#include <sstream>
 #include <ctime>
 
 // Global variables
 HWND hwndWinamp = NULL;
 char currentTitle[2048] = "";
-char logFilePath[MAX_PATH] = "";
+char dbPath[MAX_PATH] = "";
 HANDLE hTimer = NULL;
 HANDLE hTimerQueue = NULL;
 winampGeneralPurposePlugin* g_plugin = NULL;
 HMODULE g_hModule = NULL;
+sqlite3* db = NULL;
 
 // DLL entry point
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
@@ -29,65 +29,115 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 
 // Forward declarations
 void CALLBACK TimerCallback(PVOID lpParam, BOOLEAN TimerOrWaitFired);
-void WriteToLogFile(const char* title);
-void GetLogFilePath();
+void LogToDatabase(const char* title, const char* filepath);
+void GetDatabasePath();
+bool InitDatabase();
+void CloseDatabase();
 
-// Plugin description string (non-const for Winamp API)
-static char pluginDescription[] = "winnp - Now Playing Logger";
+// Plugin description string
+static char pluginDescription[] = "winnp - Now Playing Logger (SQLite)";
 
-// Plugin description
+// Plugin structure
 winampGeneralPurposePlugin plugin = {
     GPPHDR_VER,
     pluginDescription,
     init,
     config,
     quit,
-    NULL,  // hwndParent - set by Winamp
-    NULL   // hDllInstance - set by Winamp
+    NULL,
+    NULL
 };
 
-// Get the log file path (in user's Documents folder)
-void GetLogFilePath() {
-    if (strlen(logFilePath) > 0) return;
+// Get the database path (in user's Documents folder)
+void GetDatabasePath() {
+    if (strlen(dbPath) > 0) return;
     
     char documentsPath[MAX_PATH];
     
-    // Get the user's Documents folder
     if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_MYDOCUMENTS, NULL, 0, documentsPath))) {
-        snprintf(logFilePath, MAX_PATH, "%s\\nowplaying.txt", documentsPath);
+        snprintf(dbPath, MAX_PATH, "%s\\nowplaying.db", documentsPath);
     } else {
-        // Fallback to user profile directory using Windows API
         DWORD size = MAX_PATH;
         char userProfile[MAX_PATH];
         if (GetEnvironmentVariableA("USERPROFILE", userProfile, size) > 0) {
-            snprintf(logFilePath, MAX_PATH, "%s\\Documents\\nowplaying.txt", userProfile);
+            snprintf(dbPath, MAX_PATH, "%s\\Documents\\nowplaying.db", userProfile);
         } else {
-            // Last resort fallback
-            strncpy_s(logFilePath, MAX_PATH, "C:\\nowplaying.txt", _TRUNCATE);
+            strncpy_s(dbPath, MAX_PATH, "C:\\nowplaying.db", _TRUNCATE);
         }
     }
 }
 
-// Write current track info to log file
-void WriteToLogFile(const char* title) {
-    if (!title || strlen(title) == 0) return;
+// Initialize SQLite database
+bool InitDatabase() {
+    GetDatabasePath();
     
-    GetLogFilePath();
-    
-    std::ofstream logFile(logFilePath, std::ios::app);
-    if (logFile.is_open()) {
-        // Get current time
-        time_t now = time(0);
-        struct tm timeinfo;
-        localtime_s(&timeinfo, &now);
-        
-        char timeStr[64];
-        strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", &timeinfo);
-        
-        // Write to file
-        logFile << "[" << timeStr << "] " << title << std::endl;
-        logFile.close();
+    int rc = sqlite3_open(dbPath, &db);
+    if (rc != SQLITE_OK) {
+        db = NULL;
+        return false;
     }
+    
+    // Create table if it doesn't exist
+    const char* createTableSQL = 
+        "CREATE TABLE IF NOT EXISTS play_history ("
+        "    id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,"
+        "    title TEXT NOT NULL,"
+        "    filepath TEXT,"
+        "    played_at TEXT"
+        ");";
+    
+    char* errMsg = NULL;
+    rc = sqlite3_exec(db, createTableSQL, NULL, NULL, &errMsg);
+    if (rc != SQLITE_OK) {
+        if (errMsg) sqlite3_free(errMsg);
+        sqlite3_close(db);
+        db = NULL;
+        return false;
+    }
+    
+    // Create index on timestamp for faster queries
+    const char* createIndexSQL = 
+        "CREATE INDEX IF NOT EXISTS idx_timestamp ON play_history(timestamp);";
+    sqlite3_exec(db, createIndexSQL, NULL, NULL, NULL);
+    
+    return true;
+}
+
+// Close database connection
+void CloseDatabase() {
+    if (db) {
+        sqlite3_close(db);
+        db = NULL;
+    }
+}
+
+// Log track to database
+void LogToDatabase(const char* title, const char* filepath) {
+    if (!db || !title || strlen(title) == 0) return;
+    
+    // Get current local time as string
+    time_t now = time(0);
+    struct tm timeinfo;
+    localtime_s(&timeinfo, &now);
+    char timeStr[64];
+    strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", &timeinfo);
+    
+    // Prepare SQL statement
+    const char* insertSQL = "INSERT INTO play_history (title, filepath, played_at) VALUES (?, ?, ?);";
+    sqlite3_stmt* stmt = NULL;
+    
+    int rc = sqlite3_prepare_v2(db, insertSQL, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return;
+    
+    // Bind parameters
+    sqlite3_bind_text(stmt, 1, title, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, filepath ? filepath : "", -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, timeStr, -1, SQLITE_TRANSIENT);
+    
+    // Execute
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
 }
 
 // Timer callback to check for track changes
@@ -100,34 +150,42 @@ void CALLBACK TimerCallback(PVOID lpParam, BOOLEAN TimerOrWaitFired) {
             hwndWinamp = FindWindowA("Winamp v1.x", NULL);
         }
         if (!hwndWinamp) {
-            return; // Still no window, skip this check
+            return;
         }
     }
     
-    // Get current track info from Winamp
-    char title[2048];
-    title[0] = '\0';
+    // Check if Winamp is playing
+    int isPlaying = (int)SendMessage(hwndWinamp, WM_WA_IPC, 0, IPC_ISPLAYING);
+    if (isPlaying != 1) return; // 1 = playing, 0 = stopped, 3 = paused
     
-    // Get current playlist position
+    // Get current track info
+    char title[2048] = "";
+    char filepath[MAX_PATH] = "";
+    
     int position = (int)SendMessage(hwndWinamp, WM_WA_IPC, 0, IPC_GETLISTPOS);
     
     if (position >= 0) {
-        // Get the title string for the current position
-        // IPC_GETPLAYLISTTITLE returns a pointer to the title string
+        // Get title
         char* titlePtr = (char*)SendMessage(hwndWinamp, WM_WA_IPC, position, IPC_GETPLAYLISTTITLE);
         if (titlePtr && titlePtr != (char*)-1) {
             strncpy_s(title, sizeof(title), titlePtr, _TRUNCATE);
         }
+        
+        // Get filepath
+        char* filePtr = (char*)SendMessage(hwndWinamp, WM_WA_IPC, position, IPC_GETPLAYLISTFILE);
+        if (filePtr && filePtr != (char*)-1) {
+            strncpy_s(filepath, sizeof(filepath), filePtr, _TRUNCATE);
+        }
     }
     
-    // If we still don't have a title, try getting it from the window title
+    // Fallback: get title from window
     if (strlen(title) == 0) {
         char windowTitle[512];
         if (GetWindowTextA(hwndWinamp, windowTitle, sizeof(windowTitle)) > 0) {
-            // Winamp window title format: "Winamp - [track info]"
-            char* dashPos = strstr(windowTitle, " - ");
+            char* dashPos = strstr(windowTitle, " - Winamp");
             if (dashPos) {
-                strncpy_s(title, sizeof(title), dashPos + 3, _TRUNCATE);
+                size_t len = dashPos - windowTitle;
+                strncpy_s(title, sizeof(title), windowTitle, len);
             }
         }
     }
@@ -135,69 +193,63 @@ void CALLBACK TimerCallback(PVOID lpParam, BOOLEAN TimerOrWaitFired) {
     // Check if track has changed
     if (strlen(title) > 0 && strcmp(title, currentTitle) != 0) {
         strncpy_s(currentTitle, sizeof(currentTitle), title, _TRUNCATE);
-        WriteToLogFile(title);
+        LogToDatabase(title, filepath);
     }
 }
 
 // Plugin initialization
 int init() {
-    // Get Winamp window handle from the plugin structure
-    // Winamp sets hwndParent to the main window handle when it loads the plugin
     if (g_plugin && g_plugin->hwndParent) {
         hwndWinamp = g_plugin->hwndParent;
     } else {
-        // Fallback: try to find Winamp window by class name
         hwndWinamp = FindWindowA("Winamp v1.x", NULL);
     }
     
-    // Don't fail initialization if window isn't found yet - we'll try again in the timer
-    // Some versions of Winamp may not have the window ready immediately
-    
-    // Initialize log file path
-    GetLogFilePath();
+    // Initialize database
+    if (!InitDatabase()) {
+        return 1;
+    }
     
     // Create timer queue for periodic checking
     hTimerQueue = CreateTimerQueue();
     if (hTimerQueue) {
-        // Create a timer that fires every 500ms to check for track changes
         CreateTimerQueueTimer(&hTimer, hTimerQueue, TimerCallback, NULL, 500, 500, WT_EXECUTEINTIMERTHREAD);
     }
     
-    // Always return 0 (success) to allow plugin to load
-    // The timer callback will handle getting the window handle if needed
     return 0;
 }
 
-// Plugin configuration (optional - can be empty)
+// Plugin configuration
 void config() {
-    // Could open a configuration dialog here
-    // For now, just show a message
-    MessageBoxA(NULL, 
-                "winnp - Now Playing Logger\n\n"
-                "This plugin logs the currently playing song to:\n"
-                "Documents\\nowplaying.txt\n\n"
-                "The log file is updated each time the track changes.",
-                "winnp Configuration",
-                MB_OK | MB_ICONINFORMATION);
+    char msg[512];
+    snprintf(msg, sizeof(msg),
+        "winnp - Now Playing Logger\n\n"
+        "Logs currently playing songs to SQLite database:\n"
+        "%s\n\n"
+        "Table: play_history\n"
+        "Columns: id, timestamp, title, filepath, played_at",
+        dbPath);
+    
+    MessageBoxA(NULL, msg, "winnp Configuration", MB_OK | MB_ICONINFORMATION);
 }
 
 // Plugin cleanup
 void quit() {
-    // Cancel and delete timer
     if (hTimer && hTimerQueue) {
-        DeleteTimerQueueTimer(hTimerQueue, hTimer, NULL);
+        DeleteTimerQueueTimer(hTimerQueue, hTimer, INVALID_HANDLE_VALUE);
     }
     if (hTimerQueue) {
         DeleteTimerQueue(hTimerQueue);
     }
     
-    // Clear variables
+    CloseDatabase();
+    
     hwndWinamp = NULL;
     hTimer = NULL;
     hTimerQueue = NULL;
 }
 
-// DLL entry point
+// Plugin export function
 extern "C" __declspec(dllexport) winampGeneralPurposePlugin* winampGetGeneralPurposePlugin() {
     g_plugin = &plugin;
     return &plugin;

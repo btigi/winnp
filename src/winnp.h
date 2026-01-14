@@ -5,10 +5,9 @@
 
 // Winamp IPC messages
 #define WM_WA_IPC WM_USER
-#define IPC_GETWND 0
 #define IPC_GETLISTPOS 125
 #define IPC_GETPLAYLISTTITLE 212
-#define IPC_GETOUTPUTTIME 105
+#define IPC_GETPLAYLISTFILE 211
 #define IPC_ISPLAYING 104
 
 // Winamp General Purpose Plugin structure
