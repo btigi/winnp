@@ -9,6 +9,7 @@
 #define IPC_GETPLAYLISTTITLE 212
 #define IPC_GETPLAYLISTFILE 211
 #define IPC_ISPLAYING 104
+#define IPC_GETOUTPUTTIME 105  // wparam=0: position ms, wparam=1: track length ms
 
 // Winamp General Purpose Plugin structure
 #define GPPHDR_VER 0x10

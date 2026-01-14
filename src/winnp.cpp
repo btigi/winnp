@@ -14,6 +14,8 @@ HANDLE hTimerQueue = NULL;
 winampGeneralPurposePlugin* g_plugin = NULL;
 HMODULE g_hModule = NULL;
 sqlite3* db = NULL;
+int lastPositionPercent = 0;       // Track position percentage (0-100)
+char lastFilepath[MAX_PATH] = "";  // Track filepath for repeat detection
 
 // DLL entry point
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
@@ -190,10 +192,39 @@ void CALLBACK TimerCallback(PVOID lpParam, BOOLEAN TimerOrWaitFired) {
         }
     }
     
+    // Get track position and length for repeat detection
+    int currentPosMs = (int)SendMessage(hwndWinamp, WM_WA_IPC, 0, IPC_GETOUTPUTTIME);
+    int trackLengthMs = (int)SendMessage(hwndWinamp, WM_WA_IPC, 1, IPC_GETOUTPUTTIME);
+    
+    int currentPercent = 0;
+    if (trackLengthMs > 0 && currentPosMs >= 0) {
+        currentPercent = (currentPosMs * 100) / trackLengthMs;
+    }
+    
+    bool shouldLog = false;
+    
     // Check if track has changed
     if (strlen(title) > 0 && strcmp(title, currentTitle) != 0) {
+        shouldLog = true;
+    }
+    // Check for repeat: same track, was at 90%+, now at <5%
+    else if (strlen(filepath) > 0 && strcmp(filepath, lastFilepath) == 0 &&
+             lastPositionPercent >= 90 && currentPercent < 5) {
+        shouldLog = true;
+    }
+    
+    if (shouldLog && strlen(title) > 0) {
         strncpy_s(currentTitle, sizeof(currentTitle), title, _TRUNCATE);
+        strncpy_s(lastFilepath, sizeof(lastFilepath), filepath, _TRUNCATE);
         LogToDatabase(title, filepath);
+    }
+    
+    // Update last position (only if we got a valid reading)
+    if (trackLengthMs > 0) {
+        lastPositionPercent = currentPercent;
+        if (strlen(filepath) > 0) {
+            strncpy_s(lastFilepath, sizeof(lastFilepath), filepath, _TRUNCATE);
+        }
     }
 }
 
