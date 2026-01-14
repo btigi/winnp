@@ -10,6 +10,15 @@
 #define IPC_GETPLAYLISTFILE 211
 #define IPC_ISPLAYING 104
 #define IPC_GETOUTPUTTIME 105  // wparam=0: position ms, wparam=1: track length ms
+#define IPC_GET_EXTENDED_FILE_INFO 290
+
+// Structure for getting extended file info
+typedef struct {
+    const char* filename;
+    const char* metadata;
+    char* ret;
+    size_t retlen;
+} extendedFileInfoStruct;
 
 // Winamp General Purpose Plugin structure
 #define GPPHDR_VER 0x10

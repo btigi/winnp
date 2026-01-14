@@ -4,6 +4,7 @@
 #include <shlobj.h>
 #include <string>
 #include <ctime>
+#include <cstdlib>
 
 // Global variables
 HWND hwndWinamp = NULL;
@@ -35,6 +36,8 @@ void LogToDatabase(const char* title, const char* filepath);
 void GetDatabasePath();
 bool InitDatabase();
 void CloseDatabase();
+void GetExtendedFileInfo(const char* filepath, const char* field, char* buffer, size_t bufferSize);
+void GetFilenameFromPath(const char* filepath, char* filename, size_t bufferSize);
 
 // Plugin description string
 static char pluginDescription[] = "winnp - Now Playing Logger (SQLite)";
@@ -79,14 +82,20 @@ bool InitDatabase() {
         return false;
     }
     
-    // Create table if it doesn't exist
+    // Create table with extended metadata
     const char* createTableSQL = 
         "CREATE TABLE IF NOT EXISTS play_history ("
         "    id INTEGER PRIMARY KEY AUTOINCREMENT,"
-        "    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,"
-        "    title TEXT NOT NULL,"
+        "    played_at TEXT NOT NULL,"
         "    filepath TEXT,"
-        "    played_at TEXT"
+        "    filename TEXT,"
+        "    title TEXT,"
+        "    artist TEXT,"
+        "    album TEXT,"
+        "    genre TEXT,"
+        "    track_number TEXT,"
+        "    year TEXT,"
+        "    duration_ms INTEGER"
         ");";
     
     char* errMsg = NULL;
@@ -98,9 +107,9 @@ bool InitDatabase() {
         return false;
     }
     
-    // Create index on timestamp for faster queries
+    // Create index on played_at for faster queries
     const char* createIndexSQL = 
-        "CREATE INDEX IF NOT EXISTS idx_timestamp ON play_history(timestamp);";
+        "CREATE INDEX IF NOT EXISTS idx_played_at ON play_history(played_at);";
     sqlite3_exec(db, createIndexSQL, NULL, NULL, NULL);
     
     return true;
@@ -114,28 +123,107 @@ void CloseDatabase() {
     }
 }
 
-// Log track to database
-void LogToDatabase(const char* title, const char* filepath) {
-    if (!db || !title || strlen(title) == 0) return;
+// Get extended file info from Winamp
+void GetExtendedFileInfo(const char* filepath, const char* field, char* buffer, size_t bufferSize) {
+    buffer[0] = '\0';
+    if (!hwndWinamp || !filepath || strlen(filepath) == 0) return;
     
-    // Get current local time as string
+    extendedFileInfoStruct info;
+    info.filename = filepath;
+    info.metadata = field;
+    info.ret = buffer;
+    info.retlen = bufferSize;
+    
+    SendMessage(hwndWinamp, WM_WA_IPC, (WPARAM)&info, IPC_GET_EXTENDED_FILE_INFO);
+}
+
+// Extract filename from full path
+void GetFilenameFromPath(const char* filepath, char* filename, size_t bufferSize) {
+    filename[0] = '\0';
+    if (!filepath) return;
+    
+    const char* lastSlash = strrchr(filepath, '\\');
+    if (!lastSlash) lastSlash = strrchr(filepath, '/');
+    
+    if (lastSlash) {
+        strncpy_s(filename, bufferSize, lastSlash + 1, _TRUNCATE);
+    } else {
+        strncpy_s(filename, bufferSize, filepath, _TRUNCATE);
+    }
+}
+
+// Log track to database with extended metadata
+void LogToDatabase(const char* title, const char* filepath) {
+    if (!db) return;
+    
+    // Get current local time
     time_t now = time(0);
     struct tm timeinfo;
     localtime_s(&timeinfo, &now);
     char timeStr[64];
     strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", &timeinfo);
     
+    // Get filename from path
+    char filename[MAX_PATH] = "";
+    GetFilenameFromPath(filepath, filename, sizeof(filename));
+    
+    // Get extended metadata from Winamp
+    char artist[256] = "";
+    char album[256] = "";
+    char genre[128] = "";
+    char trackNum[32] = "";
+    char year[32] = "";
+    char lengthStr[32] = "";
+    
+    if (filepath && strlen(filepath) > 0) {
+        GetExtendedFileInfo(filepath, "artist", artist, sizeof(artist));
+        GetExtendedFileInfo(filepath, "album", album, sizeof(album));
+        GetExtendedFileInfo(filepath, "genre", genre, sizeof(genre));
+        GetExtendedFileInfo(filepath, "track", trackNum, sizeof(trackNum));
+        GetExtendedFileInfo(filepath, "year", year, sizeof(year));
+        GetExtendedFileInfo(filepath, "length", lengthStr, sizeof(lengthStr));
+    }
+    
+    // Parse duration (length is in milliseconds as string, or might be in seconds)
+    int durationMs = 0;
+    if (strlen(lengthStr) > 0) {
+        durationMs = atoi(lengthStr);
+        // If it looks like seconds (< 10000), convert to ms
+        if (durationMs > 0 && durationMs < 10000) {
+            durationMs *= 1000;
+        }
+    }
+    
+    // Use title from parameter if metadata title is empty
+    const char* finalTitle = title;
+    char metaTitle[512] = "";
+    if (filepath && strlen(filepath) > 0) {
+        GetExtendedFileInfo(filepath, "title", metaTitle, sizeof(metaTitle));
+        if (strlen(metaTitle) > 0) {
+            finalTitle = metaTitle;
+        }
+    }
+    
     // Prepare SQL statement
-    const char* insertSQL = "INSERT INTO play_history (title, filepath, played_at) VALUES (?, ?, ?);";
+    const char* insertSQL = 
+        "INSERT INTO play_history (played_at, filepath, filename, title, artist, album, genre, track_number, year, duration_ms) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
     sqlite3_stmt* stmt = NULL;
     
     int rc = sqlite3_prepare_v2(db, insertSQL, -1, &stmt, NULL);
     if (rc != SQLITE_OK) return;
     
     // Bind parameters
-    sqlite3_bind_text(stmt, 1, title, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 1, timeStr, -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 2, filepath ? filepath : "", -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 3, timeStr, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, filename, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, finalTitle ? finalTitle : "", -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 5, artist, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 6, album, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 7, genre, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 8, trackNum, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 9, year, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 10, durationMs);
     
     // Execute
     sqlite3_step(stmt);
@@ -252,13 +340,14 @@ int init() {
 
 // Plugin configuration
 void config() {
-    char msg[512];
+    char msg[600];
     snprintf(msg, sizeof(msg),
         "winnp - Now Playing Logger\n\n"
         "Logs currently playing songs to SQLite database:\n"
         "%s\n\n"
         "Table: play_history\n"
-        "Columns: id, timestamp, title, filepath, played_at",
+        "Columns: id, played_at, filepath, filename,\n"
+        "title, artist, album, genre, track_number, year, duration_ms",
         dbPath);
     
     MessageBoxA(NULL, msg, "winnp Configuration", MB_OK | MB_ICONINFORMATION);
