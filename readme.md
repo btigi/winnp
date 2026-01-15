@@ -21,6 +21,8 @@ $ msbuild winnp.sln /p:Configuration=Release
 
 Place the plugin file (gen_winnp.dll) in the Winamp plugin directory (default C:\Program Files (x86)\Winamp\Plugins). Each played song is automatically logged to nowplaying.db in the current user's Documents directory.
 
+The location of the database file can be customised via the winnp_db_path environment variable, e.g. `C:\databases\`
+
 
 ## Licencing
 
