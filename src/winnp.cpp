@@ -53,10 +53,29 @@ winampGeneralPurposePlugin plugin = {
     NULL
 };
 
-// Get the database path (in user's Documents folder)
+// Get the database path
 void GetDatabasePath() {
     if (strlen(dbPath) > 0) return;
     
+    // Read environment variable (read from the registry directly, which feels like a hack
+    // but means I don't have to log out/restart anything in order to pick up the env. var.
+    HKEY hKey;
+    if (RegOpenKeyExA(HKEY_CURRENT_USER, "Environment", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        char regValue[MAX_PATH] = "";
+        DWORD regSize = sizeof(regValue);
+        DWORD regType = 0;
+        
+        if (RegQueryValueExA(hKey, "winnp_db_path", NULL, &regType, (LPBYTE)regValue, &regSize) == ERROR_SUCCESS) {
+            if (strlen(regValue) > 0) {
+                strncpy_s(dbPath, MAX_PATH, regValue, _TRUNCATE);
+                RegCloseKey(hKey);
+                return;
+            }
+        }
+        RegCloseKey(hKey);
+    }
+    
+    // Fallback to Documents folder
     char documentsPath[MAX_PATH];
     
     if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_MYDOCUMENTS, NULL, 0, documentsPath))) {
