@@ -2,6 +2,7 @@
 #include "sqlite3.h"
 #include <windows.h>
 #include <shlobj.h>
+#include <objbase.h>
 #include <string>
 #include <ctime>
 #include <cstdlib>
@@ -38,6 +39,7 @@ bool InitDatabase();
 void CloseDatabase();
 void GetExtendedFileInfo(const char* filepath, const char* field, char* buffer, size_t bufferSize);
 void GetFilenameFromPath(const char* filepath, char* filename, size_t bufferSize);
+void GenerateGuid(char* buffer, size_t bufferSize);
 
 // Plugin description string
 static char pluginDescription[] = "winnp - Now Playing Logger (SQLite)";
@@ -104,7 +106,7 @@ bool InitDatabase() {
     // Create table with extended metadata
     const char* createTableSQL = 
         "CREATE TABLE IF NOT EXISTS play_history ("
-        "    id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "    id TEXT PRIMARY KEY,"
         "    played_at TEXT NOT NULL,"
         "    filepath TEXT,"
         "    filename TEXT,"
@@ -171,6 +173,18 @@ void GetFilenameFromPath(const char* filepath, char* filename, size_t bufferSize
     }
 }
 
+// Generate a GUID string
+void GenerateGuid(char* buffer, size_t bufferSize) {
+    GUID guid;
+    CoCreateGuid(&guid);
+    
+    snprintf(buffer, bufferSize,
+        "%08lx-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+        guid.Data1, guid.Data2, guid.Data3,
+        guid.Data4[0], guid.Data4[1], guid.Data4[2], guid.Data4[3],
+        guid.Data4[4], guid.Data4[5], guid.Data4[6], guid.Data4[7]);
+}
+
 // Log track to database with extended metadata
 void LogToDatabase(const char* title, const char* filepath) {
     if (!db) return;
@@ -223,26 +237,31 @@ void LogToDatabase(const char* title, const char* filepath) {
         }
     }
     
+    // Generate GUID for this record
+    char guid[64];
+    GenerateGuid(guid, sizeof(guid));
+    
     // Prepare SQL statement
     const char* insertSQL = 
-        "INSERT INTO play_history (played_at, filepath, filename, title, artist, album, genre, track_number, year, duration_ms) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
+        "INSERT INTO play_history (id, played_at, filepath, filename, title, artist, album, genre, track_number, year, duration_ms) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
     sqlite3_stmt* stmt = NULL;
     
     int rc = sqlite3_prepare_v2(db, insertSQL, -1, &stmt, NULL);
     if (rc != SQLITE_OK) return;
     
     // Bind parameters
-    sqlite3_bind_text(stmt, 1, timeStr, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 2, filepath ? filepath : "", -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 3, filename, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 4, finalTitle ? finalTitle : "", -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 5, artist, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 6, album, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 7, genre, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 8, trackNum, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 9, year, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 10, durationMs);
+    sqlite3_bind_text(stmt, 1, guid, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, timeStr, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, filepath ? filepath : "", -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, filename, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 5, finalTitle ? finalTitle : "", -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 6, artist, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 7, album, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 8, genre, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 9, trackNum, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 10, year, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 11, durationMs);
     
     // Execute
     sqlite3_step(stmt);
@@ -359,16 +378,16 @@ int init() {
 
 // Plugin configuration
 void config() {
-    char msg[600];
+    char msg[700];
     snprintf(msg, sizeof(msg),
         "winnp - Now Playing Logger\n\n"
-        "Logs currently playing songs to SQLite database:\n"
-        "%s\n\n"
+        "Database: %s\n\n"
+        "Set winnp_db_path environment variable to customize location.\n\n"
         "Table: play_history\n"
-        "Columns: id, played_at, filepath, filename,\n"
+        "Columns: id (GUID), played_at, filepath, filename,\n"
         "title, artist, album, genre, track_number, year, duration_ms",
         dbPath);
-    
+
     MessageBoxA(NULL, msg, "winnp Configuration", MB_OK | MB_ICONINFORMATION);
 }
 
